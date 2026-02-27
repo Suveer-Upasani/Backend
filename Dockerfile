@@ -1,28 +1,30 @@
+# Base image
 FROM python:3.11-slim
 
+# Environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     TORCH_HOME=/app/models \
     ULTRALYTICS_CONFIG_DIR=/app/config
 
+# Working directory
 WORKDIR /app
 
-# System dependencies for OpenCV (required by ultralytics internally)
+# System dependencies for OpenCV / YOLO
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx libglib2.0-0 && rm -rf /var/lib/apt/lists/*
+    libgl1 \
+    libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
 COPY requirements.txt .
 
-# Install CPU-only PyTorch (no GPU drivers, saves RAM)
+# Install CPU-only PyTorch
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
-# Install other dependencies
+# Install other Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Pre-download YOLOv8n model
-RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
 
 # Copy backend code
 COPY . .
@@ -30,5 +32,5 @@ COPY . .
 # Expose port
 EXPOSE 10000
 
-# Run FastAPI app with single worker (memory-friendly)
+# Command to run FastAPI app
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "10000", "--workers", "1"]

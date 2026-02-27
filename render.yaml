@@ -1,15 +1,14 @@
 services:
-  - type: web
-    name: yolov8-detector
-    # Optimization: Use Docker for specific system-level dependencies
-    env: docker
-    plan: free
-    region: ohio
-    # These settings are used if you point Render to this folder
-    rootDir: .
-    dockerContext: .
+  - type: web                  # Defines a web service
+    name: yolov8-detector      # Name of your service
+    runtime: docker            # Use Docker to build/run your app
+    branch: main               # Branch to auto-deploy from
+    plan: free                 # Free Render plan
+    region: oregon             # Optional, choose a region
     dockerfilePath: Dockerfile
+    dockerContext: .
     envVars:
       - key: PORT
-        value: "10000"
-    healthCheckPath: /health
+        value: "10000"         # FastAPI app binds to this port
+    healthCheckPath: /health   # For Render health monitoring
+    autoDeploy: true           # Auto deploy on push to main
