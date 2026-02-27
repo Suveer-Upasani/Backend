@@ -6,16 +6,24 @@ from PIL import Image
 from ultralytics import YOLO
 import os
 
-# Initialize FastAPI app
-app = FastAPI(title="YOLOv8 Nano Object Detection API")
+# Fix for PyTorch 2.6+ weights_only=True security restriction
+# This allows YOLO models to load safely
+try:
+    from ultralytics.nn.tasks import DetectionModel
+    if hasattr(torch.serialization, 'add_safe_globals'):
+        torch.serialization.add_safe_globals([DetectionModel])
+except ImportError:
+    pass
 
-# Use absolute path if available, else relative
+# Initialize FastAPI app
+app = FastAPI(title="YOLOv8 Object Detection & Identification")
+
 MODEL_PATH = os.getenv("MODEL_PATH", "yolov8n.pt")
 model = None
 
 @app.on_event("startup")
 async def startup_event():
-    """Load model on startup to avoid delay on first request."""
+    """Load model on startup."""
     load_model()
 
 def load_model():
@@ -23,20 +31,13 @@ def load_model():
     if model is None:
         try:
             # Check for model in multiple potential locations
-            paths_to_check = [MODEL_PATH, "yolov8n.pt", "/app/yolov8n.pt", "/app/models/yolov8n.pt"]
+            paths_to_check = [MODEL_PATH, "yolov8n.pt", "/app/yolov8n.pt"]
+            final_path = next((p for p in paths_to_check if os.path.exists(p)), "yolov8n.pt")
             
-            final_path = None
-            for p in paths_to_check:
-                if os.path.exists(p):
-                    final_path = p
-                    break
-            
-            if final_path:
-                model = YOLO(final_path)
-                print(f"Successfully loaded model from {final_path}")
-            else:
-                print("Model file not found locally. Attempting to download 'yolov8n.pt'...")
-                model = YOLO("yolov8n.pt") 
+            # Use weights_only=False for local model loading if needed via environment
+            # but usually YOLO() handles this if classes are in safe_globals
+            model = YOLO(final_path)
+            print(f"Successfully loaded YOLO model from {final_path}")
         except Exception as e:
             print(f"Critical Error: Could not load model: {e}")
             model = None
@@ -44,41 +45,39 @@ def load_model():
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    """Simple UI to capture a photo from the camera."""
+    """Simple UI to capture a photo and detect objects."""
     return """
     <!DOCTYPE html>
     <html>
     <head>
-        <title>YOLOv8 Camera Detection</title>
+        <title>YOLOv8 Object Identification</title>
         <style>
             body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; padding: 20px; background: #f0f2f5; color: #333; }
             #container { max-width: 800px; margin: auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
             .video-wrap { position: relative; margin-bottom: 20px; background: #000; border-radius: 10px; overflow: hidden; line-height: 0; }
             video, #display-canvas { width: 100%; height: auto; border-radius: 10px; }
             #display-canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
-            .controls { display: flex; gap: 10px; justify-content: center; margin-bottom: 20px; }
-            input { padding: 12px; border: 2px solid #ddd; border-radius: 8px; flex-grow: 1; font-size: 16px; outline: none; }
-            input:focus { border-color: #007bff; }
-            button { padding: 12px 24px; font-size: 16px; font-weight: bold; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 8px; transition: background 0.2s; }
+            .controls { margin-bottom: 20px; }
+            button { padding: 15px 40px; font-size: 18px; font-weight: bold; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 8px; transition: transform 0.1s, background 0.2s; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
             button:hover { background: #0056b3; }
+            button:active { transform: scale(0.98); }
             button:disabled { background: #ccc; cursor: not-allowed; }
-            #results-panel { text-align: left; margin-top: 10px; padding: 15px; background: #f8f9fa; border-left: 5px solid #007bff; border-radius: 5px; min-height: 60px; }
-            .identified-tag { display: inline-block; background: #28a745; color: white; padding: 2px 8px; border-radius: 4px; font-size: 14px; margin-right: 5px; }
+            #results-panel { text-align: left; margin-top: 10px; padding: 15px; background: #f8f9fa; border-left: 5px solid #28a745; border-radius: 5px; min-height: 60px; }
+            .object-label { display: inline-block; background: #28a745; color: white; padding: 4px 10px; border-radius: 20px; font-size: 14px; margin: 3px; font-weight: bold; }
         </style>
     </head>
     <body>
         <div id="container">
-            <h1>🔍 YOLOv8 Live Identification</h1>
+            <h1>🔍 YOLOv8 Automatic Identification</h1>
             <div class="video-wrap">
                 <video id="video" autoplay playsinline></video>
                 <canvas id="display-canvas"></canvas>
             </div>
             <div class="controls">
-                <input type="text" id="target" placeholder="Object to identify (e.g. person, cup)...">
-                <button id="capture">Capture & Identify</button>
+                <button id="capture">IDENTIFY OBJECTS</button>
             </div>
             <div id="results-panel">
-                <strong>Status:</strong> <span id="status">Ready</span>
+                <strong>Status:</strong> <span id="status">Point camera and click Identify</span>
             </div>
             <canvas id="hidden-canvas" style="display:none;"></canvas>
         </div>
@@ -88,7 +87,6 @@ async def index():
             const hiddenCanvas = document.getElementById('hidden-canvas');
             const captureButton = document.getElementById('capture');
             const statusSpan = document.getElementById('status');
-            const targetInput = document.getElementById('target');
             const displayCtx = displayCanvas.getContext('2d');
 
             navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
@@ -114,32 +112,41 @@ async def index():
                     const formData = new FormData();
                     formData.append('file', blob, 'capture.jpg');
                     
-                    const target = targetInput.value.trim();
-                    const url = target ? `/predict?target=${encodeURIComponent(target)}` : '/predict';
-                    
-                    statusSpan.innerText = "Identifying...";
+                    statusSpan.innerText = "Analyzing image...";
                     displayCtx.clearRect(0, 0, displayCanvas.width, displayCanvas.height);
                     
                     try {
-                        const response = await fetch(url, { method: 'POST', body: formData });
+                        const response = await fetch('/predict', { method: 'POST', body: formData });
                         const data = await response.json();
                         
                         if (data.detections && data.detections.length > 0) {
-                            statusSpan.innerHTML = `Identified <strong>${data.count}</strong> object(s).`;
+                            let labelsHtml = '';
+                            const uniqueNames = [...new Set(data.detections.map(d => d.class.toUpperCase()))];
+                            uniqueNames.forEach(name => {
+                                labelsHtml += `<span class="object-label">${name}</span> `;
+                            });
+                            
+                            statusSpan.innerHTML = `Identified: ${labelsHtml}`;
                             
                             // Draw bounding boxes
-                            displayCtx.strokeStyle = '#00ff00';
+                            displayCtx.strokeStyle = '#28a745';
                             displayCtx.lineWidth = 4;
-                            displayCtx.fillStyle = '#00ff00';
+                            displayCtx.fillStyle = '#28a745';
                             displayCtx.font = 'bold 20px Arial';
                             
                             data.detections.forEach(d => {
                                 const {x1, y1, x2, y2} = d.bbox;
                                 displayCtx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-                                displayCtx.fillText(`${d.class} ${(d.confidence * 100).toFixed(0)}%`, x1, y1 > 25 ? y1 - 5 : y1 + 25);
+                                // Draw background for label
+                                const label = `${d.class} ${(d.confidence * 100).toFixed(0)}%`;
+                                const textWidth = displayCtx.measureText(label).width;
+                                displayCtx.fillRect(x1, y1 > 25 ? y1 - 25 : y1, textWidth + 10, 25);
+                                displayCtx.fillStyle = 'white';
+                                displayCtx.fillText(label, x1 + 5, y1 > 25 ? y1 - 5 : y1 + 20);
+                                displayCtx.fillStyle = '#28a745';
                             });
                         } else {
-                            statusSpan.innerText = target ? `No "${target}" identified in frame.` : "Nothing identified.";
+                            statusSpan.innerText = "No recognizable objects found.";
                         }
                     } catch (err) { statusSpan.innerText = "Error: " + err; }
                 }, 'image/jpeg');
@@ -148,6 +155,54 @@ async def index():
     </body>
     </html>
     """
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    load_model()
+    return {"status": "healthy" if model else "unhealthy", "model_loaded": model is not None}
+
+@app.post("/predict")
+async def predict(file: UploadFile = File(...)):
+    """Automatic object detection and identification."""
+    model_instance = load_model()
+    if model_instance is None:
+        raise HTTPException(status_code=503, detail="Model not loaded on server")
+
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File is not an image")
+
+    try:
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents)).convert("RGB")
+
+        with torch.no_grad():
+            results = model_instance.predict(source=image, imgsz=640, device="cpu", verbose=False)
+
+        detections = []
+        for result in results:
+            for box in result.boxes:
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                conf = float(box.conf[0])
+                cls = int(box.cls[0])
+                name = model_instance.names.get(cls, str(cls))
+                
+                detections.append({
+                    "class": name,
+                    "confidence": round(conf, 4),
+                    "bbox": {"x1": round(x1,2), "y1": round(y1,2), "x2": round(x2,2), "y2": round(y2,2)}
+                })
+
+        return {"detections": detections, "count": len(detections)}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Inference error: {str(e)}")
+    finally:
+        await file.close()
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), workers=1)
 
 @app.get("/health")
 async def health_check():
