@@ -20,8 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements
 COPY requirements.txt .
 
-# Install CPU-only PyTorch
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# Install CPU-only PyTorch 2.5.1 (compatible with YOLO weights)
+RUN pip install --no-cache-dir torch==2.5.1 torchvision==0.16.1 --index-url https://download.pytorch.org/whl/cpu
 
 # Install other Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt

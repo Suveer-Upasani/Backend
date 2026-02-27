@@ -1,13 +1,12 @@
 import io
 import torch
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import HTMLResponse
 from PIL import Image
 from ultralytics import YOLO
 import os
 
-# Fix for PyTorch 2.6+ weights_only=True security restriction
-# This allows YOLO models to load safely
+# Fix for PyTorch 2.6+ (optional now, but kept for safety)
 try:
     from ultralytics.nn.tasks import DetectionModel
     if hasattr(torch.serialization, 'add_safe_globals'):
@@ -34,8 +33,6 @@ def load_model():
             paths_to_check = [MODEL_PATH, "yolov8n.pt", "/app/yolov8n.pt"]
             final_path = next((p for p in paths_to_check if os.path.exists(p)), "yolov8n.pt")
             
-            # Use weights_only=False for local model loading if needed via environment
-            # but usually YOLO() handles this if classes are in safe_globals
             model = YOLO(final_path)
             print(f"Successfully loaded YOLO model from {final_path}")
         except Exception as e:
@@ -158,54 +155,6 @@ async def index():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    load_model()
-    return {"status": "healthy" if model else "unhealthy", "model_loaded": model is not None}
-
-@app.post("/predict")
-async def predict(file: UploadFile = File(...)):
-    """Automatic object detection and identification."""
-    model_instance = load_model()
-    if model_instance is None:
-        raise HTTPException(status_code=503, detail="Model not loaded on server")
-
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="File is not an image")
-
-    try:
-        contents = await file.read()
-        image = Image.open(io.BytesIO(contents)).convert("RGB")
-
-        with torch.no_grad():
-            results = model_instance.predict(source=image, imgsz=640, device="cpu", verbose=False)
-
-        detections = []
-        for result in results:
-            for box in result.boxes:
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                conf = float(box.conf[0])
-                cls = int(box.cls[0])
-                name = model_instance.names.get(cls, str(cls))
-                
-                detections.append({
-                    "class": name,
-                    "confidence": round(conf, 4),
-                    "bbox": {"x1": round(x1,2), "y1": round(y1,2), "x2": round(x2,2), "y2": round(y2,2)}
-                })
-
-        return {"detections": detections, "count": len(detections)}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Inference error: {str(e)}")
-    finally:
-        await file.close()
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), workers=1)
-
-@app.get("/health")
-async def health_check():
     """Health check endpoint for Render monitoring."""
     load_model()
     return {"status": "healthy" if model else "unhealthy", "model_loaded": model is not None}
@@ -224,8 +173,6 @@ async def predict(file: UploadFile = File(...), target: str = None):
         contents = await file.read()
         image = Image.open(io.BytesIO(contents)).convert("RGB")
 
-        # Use CPU for inference on Render (Free tier doesn't have GPU)
-        # ultralytics handles resizing internally, preserving aspect ratio
         with torch.no_grad():
             results = model_instance.predict(source=image, imgsz=640, device="cpu", verbose=False)
 
